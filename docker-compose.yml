@@ -1,0 +1,17 @@
+services:
+  load:
+    image: ls-load
+    build: .
+    working_dir: /data
+    volumes:
+      - ./:/data
+    environment:
+      LS_LOAD_CONFIGS: ${LS_LOAD_CONFIGS:-FirstLS=/data/configs/firstls.json,SecondLS=/data/configs/secondls.json}
+      LS_LOAD_CONCURRENCY: ${LS_LOAD_CONCURRENCY:-300}
+      LS_LOAD_DURATION: ${LS_LOAD_DURATION:-5m}
+      LS_LOAD_ACCOUNTS_COUNT: ${LS_LOAD_ACCOUNTS_COUNT:-10000}
+      LS_LOAD_BLOCKS: ${LS_LOAD_BLOCKS:-last:200}
+      LS_LOAD_TIMEOUT: ${LS_LOAD_TIMEOUT:-10s}
+      LS_LOAD_WORKERS_PER_CONN: ${LS_LOAD_WORKERS_PER_CONN:-16}
+      LS_LOAD_REQUEST_LOG: ${LS_LOAD_REQUEST_LOG:-auto}
+      LS_LOAD_OUT: ${LS_LOAD_OUT:-/data/results}

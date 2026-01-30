@@ -1,0 +1,6 @@
+/results/
+/configs/
+/ls-load
+/.env.*
+/.idea
+.DS_Store

@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TON Lite Server Load Report</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600&display=swap">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<style>
+:root {
+  --bg: #f6f4ef;
+  --ink: #1b1b1b;
+  --muted: #6b6b6b;
+  --accent: #2d6cdf;
+  --accent2: #ff6b35;
+  --accent3: #00a878;
+  --card: #ffffff;
+  --grid: #e5e1d8;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+body {
+  margin: 0;
+  font-family: "Space Grotesk", "Segoe UI", sans-serif;
+  background: linear-gradient(180deg, #f6f4ef 0%, #f0ede6 100%);
+  color: var(--ink);
+}
+header {
+  padding: 24px 32px;
+  background: #111827;
+  color: #f9fafb;
+}
+header h1 { margin: 0; font-size: 22px; }
+header p { margin: 6px 0 0 0; color: #cbd5f5; }
+main { padding: 24px 32px; }
+.section { margin-bottom: 18px; }
+.section h2 { margin: 0 0 12px 0; font-size: 18px; }
+.config-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 18px; align-items: start; }
+.card { background: var(--card); border: 1px solid var(--grid); border-radius: 12px; padding: 16px 20px; box-shadow: 0 6px 20px rgba(0,0,0,0.06); }
+.summary-title { font-size: 12px; color: #374151; margin: 0 0 6px 0; }
+.method-table { margin-top: 6px; }
+.sanity { margin-bottom: 18px; }
+.sanity .hint { font-size: 12px; color: #6b7280; margin: 0 0 8px 0; }
+.sanity .delta { font-family: var(--mono); font-size: 12px; padding: 2px 6px; border-radius: 6px; background: #ecfeff; color: #0e7490; }
+.sanity .delta.warn { background: #fff7ed; color: #c2410c; }
+.sanity .delta.bad { background: #fef2f2; color: #b91c1c; }
+.table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.table th, .table td { padding: 8px 10px; border-bottom: 1px solid var(--grid); text-align: left; }
+.table th { background: #f0ede6; position: sticky; top: 0; }
+.table tr.group td { background: #111827; color: #f9fafb; font-weight: 600; border-bottom: 0; }
+.table tr.item td { background: #ffffff; }
+.table tr.item td.indent { padding-left: 24px; color: #374151; }
+.badge { font-family: var(--mono); font-size: 12px; background: #eef2ff; color: #3730a3; padding: 2px 6px; border-radius: 6px; }
+.chart { overflow-x: auto; }
+.chart-section { margin-bottom: 18px; }
+.chart-columns { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(520px, 1fr); gap: 16px; overflow-x: auto; padding-bottom: 8px; }
+.chart-col { background: #fff; border: 1px solid var(--grid); border-radius: 10px; padding: 10px 12px; min-width: 520px; }
+.chart-stack { display: grid; gap: 10px; }
+.chart-block { background: #faf9f6; border: 1px solid var(--grid); border-radius: 8px; padding: 8px; }
+.chart-title { font-size: 12px; color: #374151; margin: 0 0 6px 0; }
+.chart-col-title { font-size: 13px; font-weight: 600; margin: 0 0 8px 0; }
+canvas { width: 100% !important; height: 260px !important; }
+footer { padding: 12px 32px 24px; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>TON Lite Server Load Report</h1>
+  <p>Generated at {{TIME}}</p>
+</header>
+<main>
+  {{SANITY}}
+  {{SUMMARY_SECTION}}
+  {{ERRORS_SECTION}}
+  {{CHARTS_SECTION}}
+</main>
+<footer>Metrics: avg/pXX in ms; RPS = success / total duration.</footer>
+<script>
+const REPORT = {{REPORT_JSON}};
+
+function el(tag, className, text) {
+  const e = document.createElement(tag);
+  if (className) e.className = className;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function groupBy(arr, keyFn) {
+  const m = new Map();
+  for (const it of arr) {
+    const k = keyFn(it);
+    if (!m.has(k)) m.set(k, []);
+    m.get(k).push(it);
+  }
+  return m;
+}
+
+const MAX_POINTS = {{MAX_POINTS}};
+
+function downsample(labels, datasets, maxPoints) {
+  if (!labels || !labels.length) return { labels: [], datasets };
+  const limit = maxPoints || MAX_POINTS;
+  if (!limit || limit <= 0) return { labels, datasets };
+  if (labels.length <= limit) return { labels, datasets };
+  const step = Math.ceil(labels.length / limit);
+  const newLabels = [];
+  const newDatasets = datasets.map(ds => ({ ...ds, data: [] }));
+  for (let i = 0; i < labels.length; i += step) {
+    newLabels.push(labels[i]);
+    for (let d = 0; d < newDatasets.length; d++) {
+      const v = datasets[d].data[i];
+      newDatasets[d].data.push(v === undefined ? null : v);
+    }
+  }
+  return { labels: newLabels, datasets: newDatasets };
+}
+
+function lineChart(canvas, labels, datasets, title, yLabel, xLabel) {
+  const sampled = downsample(labels, datasets, MAX_POINTS);
+  return new Chart(canvas, {
+    type: 'line',
+    data: { labels: sampled.labels, datasets: sampled.datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      normalized: true,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top' },
+        title: title ? { display: true, text: title } : undefined
+      },
+      elements: { point: { radius: 0, hitRadius: 6 } },
+      spanGaps: true,
+      scales: {
+        x: { title: { display: true, text: xLabel || 'sec' }, ticks: { autoSkip: true, maxTicksLimit: 12 } },
+        y: { title: { display: true, text: yLabel || '' }, beginAtZero: true, min: 0 }
+      }
+    }
+  });
+}
+
+const mskFmt = new Intl.DateTimeFormat('ru-RU', {
+  timeZone: 'Europe/Moscow',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit'
+});
+
+function labelsFrom(secList, startMs) {
+  if (!startMs || !secList || !secList.length) return secList || [];
+  return secList.map(s => mskFmt.format(new Date(startMs + (s - 1) * 1000)));
+}
+
+function buildTimeline(items, startField, secField) {
+  let minStart = Infinity;
+  let maxEnd = -Infinity;
+  for (const it of items) {
+    const start = it[startField] || 0;
+    const sec = it[secField] || [];
+    if (!start || !sec.length) continue;
+    const lastSec = sec[sec.length - 1] || sec.length;
+    const end = start + (lastSec - 1) * 1000;
+    if (start < minStart) minStart = start;
+    if (end > maxEnd) maxEnd = end;
+  }
+  if (!isFinite(minStart) || !isFinite(maxEnd)) {
+    return { labels: items[0]?.[secField] || [], offsetFor: () => 0, total: (items[0]?.[secField] || []).length, useMsk: false };
+  }
+  const total = Math.round((maxEnd - minStart) / 1000) + 1;
+  const labels = [];
+  for (let i = 0; i < total; i++) {
+    labels.push(mskFmt.format(new Date(minStart + i * 1000)));
+  }
+  return {
+    labels,
+    offsetFor: (startMs) => Math.round((startMs - minStart) / 1000),
+    total,
+    useMsk: true
+  };
+}
+
+function alignSeries(values, secList, offset, total) {
+  const out = new Array(total).fill(null);
+  for (let i = 0; i < values.length; i++) {
+    const sec = (secList && secList[i]) ? secList[i] : (i + 1);
+    const idx = offset + sec - 1;
+    if (idx < 0 || idx >= total) continue;
+    out[idx] = values[i];
+  }
+  return out;
+}
+
+function renderChartsFor(root, results, methods, errors) {
+  if (!root) return;
+  const byMode = groupBy(results, r => r.mode);
+  for (const [mode, list] of byMode.entries()) {
+    root.appendChild(el('h3', '', mode));
+
+    const withSeries = list.filter(r => r.series_sec && r.series_sec.length);
+    if (withSeries.length) {
+        const byConc = groupBy(withSeries, r => r.concurrency);
+      for (const [conc, items] of byConc.entries()) {
+        const section = el('div', 'chart-section');
+        section.appendChild(el('div', 'chart-title', 'concurrency ' + conc));
+        const columns = el('div', 'chart-columns');
+        const sorted = items.slice().sort((a, b) => (a.config || '').localeCompare(b.config || ''));
+        const timeline = buildTimeline(sorted, 'series_start_ms', 'series_sec');
+        const xLabel = timeline.useMsk ? 'MSK time' : 'sec';
+
+        for (const r of sorted) {
+          const col = el('div', 'chart-col');
+          col.appendChild(el('div', 'chart-col-title', r.config + ' (c' + r.concurrency + ')'));
+
+          const stack = el('div', 'chart-stack');
+          const blockR = el('div', 'chart-block');
+          blockR.appendChild(el('div', 'chart-title', 'RPS/sec'));
+          const cR = el('canvas');
+          blockR.appendChild(cR);
+          const labelsR = labelsFrom(r.series_sec, r.series_start_ms);
+          lineChart(cR, labelsR, [
+            { label: 'rps', data: r.series_rps, borderColor: '#2d6cdf', tension: 0.2 }
+          ], '', 'rps', r.series_start_ms ? 'MSK time' : 'sec');
+          stack.appendChild(blockR);
+
+          const blockE = el('div', 'chart-block');
+          blockE.appendChild(el('div', 'chart-title', 'Errors/sec'));
+          const cE = el('canvas');
+          blockE.appendChild(cE);
+          const labelsE = labelsFrom(r.series_sec, r.series_start_ms);
+          lineChart(cE, labelsE, [
+            { label: 'errors', data: r.series_err, borderColor: '#d7263d', tension: 0.2 }
+          ], '', 'errors', r.series_start_ms ? 'MSK time' : 'sec');
+          stack.appendChild(blockE);
+
+          const blockL = el('div', 'chart-block');
+          blockL.appendChild(el('div', 'chart-title', 'Latency p50/p90/p95/p99 (ms)'));
+          const cL = el('canvas');
+          blockL.appendChild(cL);
+          const labelsL = labelsFrom(r.series_sec, r.series_start_ms);
+          const datasetsP = [
+            { label: 'p50', data: r.series_p50, borderColor: '#2d6cdf', tension: 0.2 },
+            { label: 'p90', data: r.series_p90, borderColor: '#ff6b35', tension: 0.2 },
+            { label: 'p95', data: r.series_p95, borderColor: '#00a878', tension: 0.2 },
+            { label: 'p99', data: r.series_p99, borderColor: '#6b5b95', tension: 0.2 }
+          ];
+          lineChart(cL, labelsL, datasetsP, '', 'ms', r.series_start_ms ? 'MSK time' : 'sec');
+          stack.appendChild(blockL);
+          col.appendChild(stack);
+          columns.appendChild(col);
+        }
+        section.appendChild(columns);
+        root.appendChild(section);
+      }
+    }
+
+    if (errors.length) {
+      root.appendChild(el('h4', '', 'Errors by Code'));
+      const byModeErr = errors.filter(e => e.mode === mode);
+      const byConcErr = groupBy(byModeErr, e => e.concurrency);
+      for (const [conc, items] of byConcErr.entries()) {
+        const byConfig = groupBy(items, e => e.config);
+        const section = el('div', 'chart-section');
+        section.appendChild(el('div', 'chart-title', 'concurrency ' + conc));
+        const columns = el('div', 'chart-columns');
+        for (const [cfg, cfgItems] of byConfig.entries()) {
+          const col = el('div', 'chart-col');
+          col.appendChild(el('div', 'chart-col-title', cfg + ' (c' + conc + ')'));
+          const block = el('div', 'chart-block');
+          const c = el('canvas');
+          block.appendChild(c);
+          const timeline = buildTimeline(cfgItems, 'start_ms', 'sec');
+          const xLabel = timeline.useMsk ? 'MSK time' : 'sec';
+          const datasets = cfgItems.map((e, idx) => {
+            const offset = timeline.useMsk ? timeline.offsetFor(e.start_ms || 0) : 0;
+            return {
+              label: e.code,
+              data: timeline.useMsk ? alignSeries(e.cnt, e.sec, offset, timeline.total) : e.cnt,
+              borderColor: ['#d7263d', '#ff6b35', '#2d6cdf', '#00a878', '#6b5b95', '#111827'][idx % 6],
+              tension: 0.2
+            };
+          });
+          lineChart(c, timeline.labels, datasets, '', 'errors/sec', xLabel);
+          col.appendChild(block);
+          columns.appendChild(col);
+        }
+        section.appendChild(columns);
+        root.appendChild(section);
+      }
+    }
+
+    if (methods.length) {
+      root.appendChild(el('h4', '', 'Method Breakdown'));
+      const byMethodMode = methods.filter(m => m.mode === mode);
+      const byConc = groupBy(byMethodMode, m => m.concurrency);
+      for (const [conc, items] of byConc.entries()) {
+        root.appendChild(el('div', 'chart-title', 'concurrency ' + conc));
+        const byConfig = groupBy(items, m => m.config);
+        const reqSection = el('div', 'chart-section');
+        reqSection.appendChild(el('div', 'chart-title', 'Requests/sec by method'));
+        const reqColumns = el('div', 'chart-columns');
+        for (const [cfg, cfgItems] of byConfig.entries()) {
+          const col = el('div', 'chart-col');
+          col.appendChild(el('div', 'chart-col-title', cfg + ' (c' + conc + ')'));
+          const block = el('div', 'chart-block');
+          const c = el('canvas');
+          block.appendChild(c);
+          const timeline = buildTimeline(cfgItems, 'start_ms', 'sec');
+          const xLabel = timeline.useMsk ? 'MSK time' : 'sec';
+          const datasets = cfgItems.map((m, idx) => {
+            const offset = timeline.useMsk ? timeline.offsetFor(m.start_ms || 0) : 0;
+            const total = m.ok.map((v, i) => v + (m.err[i] || 0));
+            return {
+              label: m.method,
+              data: timeline.useMsk ? alignSeries(total, m.sec, offset, timeline.total) : total,
+              borderColor: ['#2d6cdf', '#ff6b35', '#00a878', '#6b5b95', '#d7263d'][idx % 5],
+              tension: 0.2
+            };
+          });
+          lineChart(c, timeline.labels, datasets, '', 'req/s', xLabel);
+          col.appendChild(block);
+          reqColumns.appendChild(col);
+        }
+        reqSection.appendChild(reqColumns);
+        root.appendChild(reqSection);
+        const byMethod = groupBy(items, m => m.method);
+        for (const [method, mlist] of byMethod.entries()) {
+          const section = el('div', 'chart-section');
+          section.appendChild(el('div', 'chart-title', 'method: ' + method));
+          const columns = el('div', 'chart-columns');
+          const sorted = mlist.slice().sort((a, b) => (a.config || '').localeCompare(b.config || ''));
+          for (const m of sorted) {
+            const col = el('div', 'chart-col');
+            col.appendChild(el('div', 'chart-col-title', m.config + ' (c' + m.concurrency + ')'));
+            const block = el('div', 'chart-block');
+            const c = el('canvas');
+            block.appendChild(c);
+            const labels = labelsFrom(m.sec, m.start_ms);
+            const datasetsP = [
+              { label: 'p50', data: m.p50, borderColor: '#2d6cdf', tension: 0.2 },
+              { label: 'p90', data: m.p90, borderColor: '#ff6b35', tension: 0.2 },
+              { label: 'p95', data: m.p95, borderColor: '#00a878', tension: 0.2 },
+              { label: 'p99', data: m.p99, borderColor: '#6b5b95', tension: 0.2 }
+            ];
+            lineChart(c, labels, datasetsP, '', 'ms', m.start_ms ? 'MSK time' : 'sec');
+            col.appendChild(block);
+            columns.appendChild(col);
+          }
+          section.appendChild(columns);
+          root.appendChild(section);
+        }
+      }
+    }
+  }
+}
+
+function renderCharts() {
+  const roots = document.querySelectorAll('.charts-root');
+  const allResults = REPORT.results || [];
+  const allMethods = REPORT.methods || [];
+  const allErrors = REPORT.errors || [];
+  for (const root of roots) {
+    const cfg = root.getAttribute('data-config') || '';
+    const results = cfg ? allResults.filter(r => r.config === cfg) : allResults;
+    const methods = cfg ? allMethods.filter(m => m.config === cfg) : allMethods;
+    const errors = cfg ? allErrors.filter(e => e.config === cfg) : allErrors;
+    renderChartsFor(root, results, methods, errors);
+  }
+}
+
+renderCharts();
+</script>
+</body>
+<!-- {{TIME}} -->
+</html>
